@@ -125,9 +125,10 @@ const gameState = {
         tokensSpent: 0
     },
     pendingSandbagTile: null,
-    firesOnBoard: new Set(), // Track burning tiles
+    firesOnBoard: new Map(), // Track burning tiles: key -> {x, y, clicksNeeded, maxClicks}
     reinforcedTiles: new Set(), // Track reinforced tiles for this wave
-    usedLightningRods: new Set() // Track used rods this wave
+    usedLightningRods: new Set(), // Track used rods this wave
+    activeLightningStrikes: [] // Track incoming lightning strikes for player interaction
 };
 
 // Grid bounds tracking
@@ -273,9 +274,16 @@ function renderGrid() {
                         }
                     }
 
-                    // Show fire indicator
+                    // Show fire indicator with click progress
                     if (gameState.firesOnBoard.has(key)) {
                         tileElement.classList.add('on-fire');
+                        const fire = gameState.firesOnBoard.get(key);
+                        if (fire && fire.clicksNeeded > 0) {
+                            const fireIndicator = document.createElement('div');
+                            fireIndicator.className = 'fire-indicator';
+                            fireIndicator.innerHTML = `🔥<br><span class="fire-clicks">${fire.clicksNeeded}</span>`;
+                            tileElement.appendChild(fireIndicator);
+                        }
                     }
                 }
 
@@ -406,10 +414,20 @@ function handleCardClick(cardId) {
 }
 
 function handleTileClick(x, y) {
+    const key = `${x},${y}`;
+
+    // During wave phase, allow clicking fires
+    if (gameState.phase === 'wave') {
+        if (gameState.firesOnBoard.has(key)) {
+            handleFireClick(key);
+        }
+        return;
+    }
+
+    // Build phase logic
     if (gameState.phase !== 'build') return;
     if (!gameState.selectedCard) return;
 
-    const key = `${x},${y}`;
     const tile = gameState.tiles.get(key);
     const card = CARDS[gameState.selectedCard];
 
@@ -434,6 +452,66 @@ function handleTileClick(x, y) {
             showDirectionSelector();
         } else {
             placeBuilding(x, y, gameState.selectedCard);
+        }
+    }
+}
+
+function handleFireClick(key) {
+    const fire = gameState.firesOnBoard.get(key);
+    if (!fire || fire.clicksNeeded <= 0) return;
+
+    fire.clicksNeeded--;
+
+    // Check for adjacent well bucket brigade effect
+    const hasAdjacentBucket = checkAdjacentWellBuckets(fire.x, fire.y);
+    if (hasAdjacentBucket && fire.clicksNeeded > 0) {
+        // Brigade effect: reduce clicks on adjacent fires too
+        spreadFireFightingEffort(fire.x, fire.y);
+    }
+
+    if (fire.clicksNeeded <= 0) {
+        showToast('Fire extinguished!');
+        gameState.firesOnBoard.delete(key);
+    }
+
+    renderGrid();
+}
+
+function checkAdjacentWellBuckets(x, y) {
+    const positions = [
+        { x: x - 1, y },
+        { x: x + 1, y },
+        { x, y: y - 1 },
+        { x, y: y + 1 }
+    ];
+
+    for (const pos of positions) {
+        const key = `${pos.x},${pos.y}`;
+        const building = gameState.buildings.get(key);
+        if (building && building.type === 'wellBucket') {
+            return true;
+        }
+    }
+    return false;
+}
+
+function spreadFireFightingEffort(x, y) {
+    // Brigade effect: clicking one fire helps adjacent fires
+    const positions = [
+        { x: x - 1, y },
+        { x: x + 1, y },
+        { x, y: y - 1 },
+        { x, y: y + 1 }
+    ];
+
+    for (const pos of positions) {
+        const key = `${pos.x},${pos.y}`;
+        const adjacentFire = gameState.firesOnBoard.get(key);
+        if (adjacentFire && adjacentFire.clicksNeeded > 0) {
+            adjacentFire.clicksNeeded--;
+            if (adjacentFire.clicksNeeded <= 0) {
+                showToast('Brigade extinguished adjacent fire!');
+            }
         }
     }
 }
@@ -631,18 +709,39 @@ async function processEvent(event) {
 
 async function processLightning(intensity) {
     const baseTiles = getBaseTiles();
-    let strikesRemaining = intensity;
 
-    while (strikesRemaining > 0 && baseTiles.length > 0) {
+    for (let i = 0; i < intensity && baseTiles.length > 0; i++) {
         // Pick random tile
         const randomIndex = Math.floor(Math.random() * baseTiles.length);
-        const tile = baseTiles[randomIndex];
+        const tile = baseTiles.splice(randomIndex, 1)[0];
         const key = `${tile.x},${tile.y}`;
 
-        // Check for lightning rod
-        const rodAbsorbed = tryAbsorbLightning(tile.x, tile.y);
+        // Find nearby lightning rod info
+        const rodInfo = findNearbyLightningRod(tile.x, tile.y);
 
-        // Animate lightning
+        // Show lightning warning with telegraph
+        showLightningWarning(tile.x, tile.y, rodInfo);
+        showToast('⚡ Lightning incoming!');
+
+        // Wait for player to react (timing window)
+        const timingWindow = rodInfo ? (rodInfo.hasAdjacent ? 2000 : 1200) : 0;
+
+        if (rodInfo && timingWindow > 0) {
+            // Create interactive catch opportunity
+            const caught = await waitForLightningCatch(tile.x, tile.y, rodInfo, timingWindow);
+
+            if (caught) {
+                showToast('Lightning Rod caught the strike!');
+                markLightningRodUsed(rodInfo.key);
+                clearLightningWarning(tile.x, tile.y);
+                continue;
+            }
+        } else {
+            await delay(1000);
+        }
+
+        // Lightning strikes
+        clearLightningWarning(tile.x, tile.y);
         const tileElement = document.querySelector(`.tile[data-x="${tile.x}"][data-y="${tile.y}"]`);
         if (tileElement) {
             tileElement.classList.add('lightning-effect');
@@ -650,26 +749,18 @@ async function processLightning(intensity) {
             tileElement.classList.remove('lightning-effect');
         }
 
-        if (!rodAbsorbed) {
-            // Destroy building or damage heart
-            if (tile.isHeart) {
-                // Heart is hit - game over!
-                gameState.heartDestroyed = true;
-                showToast('The Heart is destroyed!');
-                return; // Stop processing, game over
-            } else if (gameState.buildings.has(key)) {
-                await destroyBuilding(tile.x, tile.y);
-            }
-        } else {
-            showToast('Lightning Rod absorbed the strike!');
+        // Destroy building or damage heart
+        if (tile.isHeart) {
+            gameState.heartDestroyed = true;
+            showToast('The Heart is destroyed!');
+            return;
+        } else if (gameState.buildings.has(key)) {
+            await destroyBuilding(tile.x, tile.y);
         }
-
-        strikesRemaining--;
     }
 }
 
-function tryAbsorbLightning(x, y) {
-    // Check for unused lightning rods on this tile or adjacent
+function findNearbyLightningRod(x, y) {
     const positions = [
         { x, y },
         { x: x - 1, y },
@@ -683,17 +774,32 @@ function tryAbsorbLightning(x, y) {
         const building = gameState.buildings.get(key);
 
         if (building && building.type === 'lightningRod' && !gameState.usedLightningRods.has(key)) {
-            // Calculate absorption capacity (check for adjacent rod bonus)
-            const capacity = calculateRodCapacity(pos.x, pos.y);
+            // Check if this rod has adjacent rods (stacking bonus)
+            const hasAdjacent = checkAdjacentLightningRods(pos.x, pos.y);
+            return {
+                x: pos.x,
+                y: pos.y,
+                key: key,
+                hasAdjacent: hasAdjacent
+            };
+        }
+    }
 
-            // Mark as used (partially or fully based on capacity)
-            if (!building.absorptionsUsed) building.absorptionsUsed = 0;
-            building.absorptionsUsed++;
+    return null;
+}
 
-            if (building.absorptionsUsed >= capacity) {
-                gameState.usedLightningRods.add(key);
-            }
+function checkAdjacentLightningRods(x, y) {
+    const positions = [
+        { x: x - 1, y },
+        { x: x + 1, y },
+        { x, y: y - 1 },
+        { x, y: y + 1 }
+    ];
 
+    for (const pos of positions) {
+        const key = `${pos.x},${pos.y}`;
+        const building = gameState.buildings.get(key);
+        if (building && building.type === 'lightningRod') {
             return true;
         }
     }
@@ -701,23 +807,83 @@ function tryAbsorbLightning(x, y) {
     return false;
 }
 
-function calculateRodCapacity(x, y) {
-    // Check for adjacent lightning rods for stacking bonus
-    const adjacent = [
-        { x: x - 1, y },
-        { x: x + 1, y },
-        { x, y: y - 1 },
-        { x, y: y + 1 }
-    ];
+function markLightningRodUsed(key) {
+    gameState.usedLightningRods.add(key);
+}
 
-    for (const pos of adjacent) {
-        const key = `${pos.x},${pos.y}`;
-        const building = gameState.buildings.get(key);
-        if (building && building.type === 'lightningRod') {
-            return 2; // Adjacent rod bonus: absorbs 2 instead of 1
+function showLightningWarning(x, y, rodInfo) {
+    const tileElement = document.querySelector(`.tile[data-x="${x}"][data-y="${y}"]`);
+    if (!tileElement) return;
+
+    const warning = document.createElement('div');
+    warning.className = 'lightning-warning';
+    warning.dataset.targetX = x;
+    warning.dataset.targetY = y;
+    warning.innerHTML = '⚡';
+
+    if (rodInfo) {
+        warning.classList.add('catchable');
+        const rodTile = document.querySelector(`.tile[data-x="${rodInfo.x}"][data-y="${rodInfo.y}"]`);
+        if (rodTile) {
+            rodTile.classList.add('rod-ready');
+            const catchBtn = document.createElement('div');
+            catchBtn.className = 'catch-button';
+            catchBtn.innerHTML = 'TAP!';
+            catchBtn.dataset.rodKey = rodInfo.key;
+            rodTile.appendChild(catchBtn);
         }
     }
 
+    tileElement.appendChild(warning);
+}
+
+function clearLightningWarning(x, y) {
+    const tileElement = document.querySelector(`.tile[data-x="${x}"][data-y="${y}"]`);
+    if (tileElement) {
+        const warning = tileElement.querySelector('.lightning-warning');
+        if (warning) warning.remove();
+    }
+
+    // Clear all catch buttons
+    document.querySelectorAll('.catch-button').forEach(btn => btn.remove());
+    document.querySelectorAll('.rod-ready').forEach(el => el.classList.remove('rod-ready'));
+}
+
+async function waitForLightningCatch(x, y, rodInfo, timingWindow) {
+    return new Promise((resolve) => {
+        let caught = false;
+        const startTime = Date.now();
+
+        const catchHandler = (event) => {
+            const catchBtn = event.target.closest('.catch-button');
+            if (catchBtn && catchBtn.dataset.rodKey === rodInfo.key) {
+                caught = true;
+                cleanup();
+                resolve(true);
+            }
+        };
+
+        const cleanup = () => {
+            document.removeEventListener('click', catchHandler);
+        };
+
+        document.addEventListener('click', catchHandler);
+
+        // Timeout
+        setTimeout(() => {
+            cleanup();
+            resolve(caught);
+        }, timingWindow);
+    });
+}
+
+function tryAbsorbLightning(x, y) {
+    // Legacy function - kept for compatibility
+    return false;
+}
+
+function calculateRodCapacity(x, y) {
+    // Legacy function - kept for compatibility
     return 1;
 }
 
@@ -730,29 +896,90 @@ async function processFire(intensity) {
         const tile = baseTiles.splice(randomIndex, 1)[0];
         const key = `${tile.x},${tile.y}`;
 
-        // Check for well bucket
-        const bucketUsed = tryUseWellBucket(tile.x, tile.y);
+        // Calculate clicks needed based on well buckets
+        const clicksNeeded = calculateFireClicksNeeded(tile.x, tile.y);
 
-        if (!bucketUsed) {
-            // Set tile on fire
-            gameState.firesOnBoard.add(key);
+        // Set tile on fire with interactive element
+        gameState.firesOnBoard.set(key, {
+            x: tile.x,
+            y: tile.y,
+            clicksNeeded: clicksNeeded,
+            maxClicks: clicksNeeded,
+            startTime: Date.now()
+        });
 
-            // Animate fire
-            const tileElement = document.querySelector(`.tile[data-x="${tile.x}"][data-y="${tile.y}"]`);
-            if (tileElement) {
-                tileElement.classList.add('fire-effect');
-                await delay(500);
-            }
+        // Animate fire appearance
+        const tileElement = document.querySelector(`.tile[data-x="${tile.x}"][data-y="${tile.y}"]`);
+        if (tileElement) {
+            tileElement.classList.add('fire-effect');
+            await delay(300);
+        }
 
-            // Destroy building if present
-            if (gameState.buildings.has(key)) {
-                await destroyBuilding(tile.x, tile.y);
-            }
-        } else {
-            showToast('Well Bucket extinguished the fire!');
+        showToast(`Fire! Click to extinguish! (${clicksNeeded} clicks)`);
+    }
+
+    renderGrid();
+
+    // Give player time to fight fires (5 seconds per fire)
+    await delay(5000);
+
+    // Process any remaining fires
+    await processUnextinguishedFires();
+}
+
+function calculateFireClicksNeeded(x, y) {
+    const baseClicks = 8;
+
+    // Check for well buckets nearby
+    const positions = [
+        { x, y },
+        { x: x - 1, y },
+        { x: x + 1, y },
+        { x, y: y - 1 },
+        { x, y: y + 1 }
+    ];
+
+    let bucketCount = 0;
+    for (const pos of positions) {
+        const key = `${pos.x},${pos.y}`;
+        const building = gameState.buildings.get(key);
+        if (building && building.type === 'wellBucket') {
+            bucketCount++;
         }
     }
 
+    if (bucketCount === 0) return baseClicks;
+    if (bucketCount === 1) return 4; // One bucket = half clicks
+    return 2; // Multiple buckets = very few clicks (brigade effect)
+}
+
+async function processUnextinguishedFires() {
+    const remainingFires = [];
+
+    for (const [key, fire] of gameState.firesOnBoard) {
+        if (fire.clicksNeeded > 0) {
+            remainingFires.push({ key, fire });
+        }
+    }
+
+    if (remainingFires.length === 0) {
+        showToast('All fires extinguished!');
+        gameState.firesOnBoard.clear();
+        renderGrid();
+        return;
+    }
+
+    showToast(`${remainingFires.length} fire(s) spread!`);
+
+    // Destroy buildings on unextinguished fires
+    for (const { key, fire } of remainingFires) {
+        if (gameState.buildings.has(key)) {
+            await destroyBuilding(fire.x, fire.y);
+        }
+    }
+
+    // Clear fires after damage
+    gameState.firesOnBoard.clear();
     renderGrid();
 }
 
@@ -781,58 +1008,9 @@ function tryUseWellBucket(x, y) {
 }
 
 async function processFireSpread() {
-    if (gameState.firesOnBoard.size === 0) return;
-
-    const newFires = [];
-
-    for (const key of gameState.firesOnBoard) {
-        const [x, y] = key.split(',').map(Number);
-
-        // Fire spreads to 1 random adjacent tile
-        const adjacent = [
-            { x: x - 1, y },
-            { x: x + 1, y },
-            { x, y: y - 1 },
-            { x, y: y + 1 }
-        ];
-
-        const validAdjacent = adjacent.filter(pos => {
-            const adjKey = `${pos.x},${pos.y}`;
-            const tile = gameState.tiles.get(adjKey);
-            return tile && !tile.isHeart && !gameState.firesOnBoard.has(adjKey);
-        });
-
-        if (validAdjacent.length > 0) {
-            const spreadTo = validAdjacent[Math.floor(Math.random() * validAdjacent.length)];
-            const spreadKey = `${spreadTo.x},${spreadTo.y}`;
-
-            // Check for well bucket
-            if (!tryUseWellBucket(spreadTo.x, spreadTo.y)) {
-                newFires.push(spreadKey);
-
-                // Destroy building if present
-                if (gameState.buildings.has(spreadKey)) {
-                    await destroyBuilding(spreadTo.x, spreadTo.y);
-                }
-            }
-        }
-    }
-
-    // Add new fires
-    for (const key of newFires) {
-        gameState.firesOnBoard.add(key);
-        showToast('Fire spreads!');
-    }
-
-    // Clear old fires (they burn out)
-    gameState.firesOnBoard.clear();
-
-    // Add new fires as current fires
-    for (const key of newFires) {
-        gameState.firesOnBoard.add(key);
-    }
-
-    renderGrid();
+    // Fire spread is now handled differently - fires don't spread, they just need to be extinguished
+    // This function is kept for compatibility but can be simplified or removed
+    return;
 }
 
 async function processFlood(intensity) {
@@ -840,13 +1018,29 @@ async function processFlood(intensity) {
     const edges = ['north', 'south', 'east', 'west'];
     const edge = edges[Math.floor(Math.random() * edges.length)];
 
-    showToast(`Flood from the ${edge}!`);
+    showToast(`🌊 Flood from the ${edge}!`);
 
     // Get tiles on that edge
     const edgeTiles = getEdgeTiles(edge);
 
+    // Show warning first
+    for (const tile of edgeTiles) {
+        const tileElement = document.querySelector(`.tile[data-x="${tile.x}"][data-y="${tile.y}"]`);
+        if (tileElement) {
+            tileElement.classList.add('flood-warning');
+        }
+    }
+
+    await delay(1500); // Give player time to see what will be hit
+
+    // Clear warnings and apply flood
     for (const tile of edgeTiles) {
         const key = `${tile.x},${tile.y}`;
+        const tileElement = document.querySelector(`.tile[data-x="${tile.x}"][data-y="${tile.y}"]`);
+
+        if (tileElement) {
+            tileElement.classList.remove('flood-warning');
+        }
 
         // Check for sandbag protection
         const building = gameState.buildings.get(key);
@@ -858,7 +1052,6 @@ async function processFlood(intensity) {
         }
 
         // Animate flood
-        const tileElement = document.querySelector(`.tile[data-x="${tile.x}"][data-y="${tile.y}"]`);
         if (tileElement) {
             tileElement.classList.add('flood-effect');
             await delay(300);
@@ -906,8 +1099,29 @@ async function processWind(intensity) {
     // Get perimeter tiles (tiles with at least one exposed edge)
     const perimeterTiles = getPerimeterTiles();
 
+    showToast('💨 Wind gust incoming!');
+
+    // Show warning first
+    for (const tile of perimeterTiles) {
+        const tileElement = document.querySelector(`.tile[data-x="${tile.x}"][data-y="${tile.y}"]`);
+        if (tileElement) {
+            const isReinforced = checkReinforceProtection(tile.x, tile.y);
+            if (!isReinforced) {
+                tileElement.classList.add('wind-warning');
+            }
+        }
+    }
+
+    await delay(1500); // Give player time to see what will be hit
+
+    // Clear warnings and apply wind
     for (const tile of perimeterTiles) {
         const key = `${tile.x},${tile.y}`;
+        const tileElement = document.querySelector(`.tile[data-x="${tile.x}"][data-y="${tile.y}"]`);
+
+        if (tileElement) {
+            tileElement.classList.remove('wind-warning');
+        }
 
         // Check for reinforcement
         if (gameState.reinforcedTiles.has(key)) {
@@ -917,11 +1131,11 @@ async function processWind(intensity) {
         // Check for reinforce building effect
         const isReinforced = checkReinforceProtection(tile.x, tile.y);
         if (isReinforced) {
+            showToast('Reinforce protected!');
             continue;
         }
 
         // Animate wind
-        const tileElement = document.querySelector(`.tile[data-x="${tile.x}"][data-y="${tile.y}"]`);
         if (tileElement) {
             tileElement.classList.add('wind-effect');
             await delay(300);
