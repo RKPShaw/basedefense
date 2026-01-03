@@ -360,6 +360,39 @@ html, body {
     50% { opacity: 0.6; }
 }
 
+/* Building Effect Ghost Indicators */
+.effect-ghost {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    width: 30%;
+    height: 30%;
+    background: rgba(255, 255, 255, 0.3);
+    border: 2px solid rgba(255, 255, 255, 0.5);
+    border-radius: 50%;
+    pointer-events: none;
+    animation: ghost-pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes ghost-pulse {
+    0%, 100% { opacity: 0.3; transform: translate(-50%, -50%) scale(0.8); }
+    50% { opacity: 0.6; transform: translate(-50%, -50%) scale(1); }
+}
+
+/* Building Effect Highlight on Hover */
+.tile.effect-highlight {
+    box-shadow: inset 0 0 20px rgba(255, 215, 0, 0.4), 0 0 15px rgba(255, 215, 0, 0.6);
+    border-color: var(--token-gold);
+    background: rgba(255, 215, 0, 0.1);
+    animation: effect-shimmer 1s ease-in-out infinite;
+}
+
+@keyframes effect-shimmer {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.7; }
+}
+
 .tile.flood-effect {
     animation: flood-flow 0.5s ease-in-out forwards;
 }
@@ -473,6 +506,41 @@ html, body {
 
 .card.consumable-card {
     border-style: dashed;
+}
+
+/* Card Tooltips */
+.card {
+    position: relative;
+}
+
+.card::after {
+    content: attr(data-tooltip);
+    position: absolute;
+    bottom: 100%;
+    left: 50%;
+    transform: translateX(-50%) translateY(-8px);
+    background: rgba(0, 0, 0, 0.95);
+    color: white;
+    padding: 12px 16px;
+    border-radius: 8px;
+    font-size: 0.75rem;
+    line-height: 1.4;
+    white-space: pre-wrap;
+    max-width: 250px;
+    text-align: left;
+    pointer-events: none;
+    opacity: 0;
+    visibility: hidden;
+    transition: opacity 0.3s, visibility 0.3s, transform 0.3s;
+    z-index: 1000;
+    border: 1px solid var(--accent-primary);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+}
+
+.card:hover::after {
+    opacity: 1;
+    visibility: visible;
+    transform: translateX(-50%) translateY(-12px);
 }
 
 #start-wave-btn {

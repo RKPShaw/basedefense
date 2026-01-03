@@ -298,6 +298,23 @@ function renderGrid() {
                         tileElement.classList.add('invalid-placement');
                     }
                 }
+
+                // Show building effect area ghosts when placing
+                if (gameState.selectedCard && gameState.selectedCard !== 'expand') {
+                    const effectArea = getBuildingEffectArea(gameState.selectedCard, x, y);
+                    if (effectArea.includes(`${x},${y}`) && gameState.tiles.has(`${x},${y}`)) {
+                        const ghostIndicator = document.createElement('div');
+                        ghostIndicator.className = 'effect-ghost';
+                        tileElement.appendChild(ghostIndicator);
+                    }
+                }
+
+                // Show effect area on hover for placed buildings (except expand)
+                if (building && building.type !== 'expand') {
+                    tileElement.dataset.buildingType = building.type;
+                    tileElement.dataset.buildingX = x;
+                    tileElement.dataset.buildingY = y;
+                }
             } else if (isExpansion) {
                 // Expansion preview tile
                 tileElement.classList.add('expansion-preview');
@@ -308,6 +325,26 @@ function renderGrid() {
             }
 
             tileElement.addEventListener('click', () => handleTileClick(x, y));
+
+            // Add hover/touch listeners for buildings to show effect area
+            if (tileElement.dataset.buildingType) {
+                tileElement.addEventListener('mouseenter', handleBuildingHover);
+                tileElement.addEventListener('mouseleave', handleBuildingHoverEnd);
+                // Mobile: long press to show effect
+                let touchTimer;
+                tileElement.addEventListener('touchstart', (e) => {
+                    if (gameState.phase === 'build') {
+                        touchTimer = setTimeout(() => {
+                            handleBuildingHover(e);
+                        }, 300);
+                    }
+                });
+                tileElement.addEventListener('touchend', () => {
+                    clearTimeout(touchTimer);
+                    setTimeout(handleBuildingHoverEnd, 1500); // Show for 1.5s
+                });
+            }
+
             elements.gameGrid.appendChild(tileElement);
         }
     }
@@ -358,6 +395,90 @@ function getExpansionPositions() {
     return positions;
 }
 
+function getBuildingEffectArea(buildingType, centerX, centerY) {
+    const affected = [];
+
+    // Get orthogonal positions (4 tiles around)
+    const orthogonal = [
+        `${centerX},${centerY}`,
+        `${centerX - 1},${centerY}`,
+        `${centerX + 1},${centerY}`,
+        `${centerX},${centerY - 1}`,
+        `${centerX},${centerY + 1}`
+    ];
+
+    switch (buildingType) {
+        case 'lightningRod':
+            // Protects self and 4 orthogonal tiles
+            return orthogonal;
+
+        case 'wellBucket':
+            // Helps fight fires on self and 4 orthogonal tiles
+            return orthogonal;
+
+        case 'reinforce':
+            // Protects self and 4 orthogonal tiles from wind
+            return orthogonal;
+
+        case 'shrine':
+            // Check for adjacent shrines to show bonus area
+            return orthogonal;
+
+        case 'sandbag':
+            // Only protects the tile it's on (direction-based)
+            return [`${centerX},${centerY}`];
+
+        default:
+            return [];
+    }
+}
+
+function getCardTooltip(cardId) {
+    const tooltips = {
+        expand: 'Add one tile adjacent to existing base. Grow your base to spread out threats.',
+
+        lightningRod: 'TAP when lightning strikes nearby to catch it! Protects this tile + 4 adjacent.\n\n⚡ STACK: Adjacent rods give 2s window instead of 1.2s',
+
+        wellBucket: 'Reduces fire clicks needed (8→4 clicks). CLICK fires to extinguish.\n\n🪣 STACK: 2+ buckets = only 2 clicks! Brigade spreads to adjacent fires.',
+
+        sandbag: 'Blocks floods from chosen direction. Place on edge tiles.\n\n🧱 TIP: Must face the right direction to work!',
+
+        reinforce: 'Protects this tile + 4 adjacent from wind. Consumable - removed after wave.\n\n🛡️ COVERAGE: North, South, East, West (not diagonal)',
+
+        shrine: 'Generates +1 token each wave. Permanent.\n\n⛩️ STACK: Adjacent shrines give +2 tokens each instead of +1!'
+    };
+
+    return tooltips[cardId] || CARDS[cardId].description;
+}
+
+function handleBuildingHover(event) {
+    const tile = event.currentTarget;
+    const buildingType = tile.dataset.buildingType;
+    const x = parseInt(tile.dataset.buildingX);
+    const y = parseInt(tile.dataset.buildingY);
+
+    if (!buildingType) return;
+
+    // Get effect area
+    const effectArea = getBuildingEffectArea(buildingType, x, y);
+
+    // Highlight affected tiles
+    effectArea.forEach(key => {
+        const [tx, ty] = key.split(',').map(Number);
+        const targetTile = document.querySelector(`.tile[data-x="${tx}"][data-y="${ty}"]`);
+        if (targetTile && gameState.tiles.has(key)) {
+            targetTile.classList.add('effect-highlight');
+        }
+    });
+}
+
+function handleBuildingHoverEnd(event) {
+    // Remove all effect highlights
+    document.querySelectorAll('.effect-highlight').forEach(tile => {
+        tile.classList.remove('effect-highlight');
+    });
+}
+
 // ============================================================================
 // CARD SYSTEM
 // ============================================================================
@@ -387,6 +508,10 @@ function renderCards() {
             <span class="card-name">${card.name}</span>
             <span class="card-cost">${card.cost} token${card.cost > 1 ? 's' : ''}</span>
         `;
+
+        // Add tooltip
+        cardElement.title = card.description;
+        cardElement.dataset.tooltip = getCardTooltip(cardId);
 
         cardElement.addEventListener('click', () => handleCardClick(cardId));
         elements.cardHand.appendChild(cardElement);
