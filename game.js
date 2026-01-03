@@ -36,7 +36,7 @@ const CARDS = {
         icon: '🧱',
         cost: 1,
         type: 'permanent',
-        description: 'Blocks flood from one direction'
+        description: 'Blocks rogue waves from one direction (stops the wave from rolling through)'
     },
     reinforce: {
         id: 'reinforce',
@@ -71,9 +71,9 @@ const EVENTS = {
     },
     flood: {
         id: 'flood',
-        name: 'Flood',
+        name: 'Rogue Wave',
         icon: '🌊',
-        flavorText: 'The waters are rising...'
+        flavorText: 'A massive wave approaches...'
     },
     wind: {
         id: 'wind',
@@ -272,6 +272,19 @@ function renderGrid() {
                             dirIndicator.className = `sandbag-dir ${building.direction}`;
                             tileElement.appendChild(dirIndicator);
                         }
+
+                        // Add ghost icons showing building effects
+                        addBuildingEffectGhosts(tileElement, building, x, y);
+
+                        // Add tooltip to building
+                        tileElement.addEventListener('mouseenter', (e) => {
+                            let tooltipText = `${card.name}: ${card.description}`;
+                            if (card.type === 'consumable') {
+                                tooltipText += ' (Consumable - will disappear after this wave)';
+                            }
+                            showTooltip(e.target, tooltipText);
+                        });
+                        tileElement.addEventListener('mouseleave', hideTooltip);
                     }
 
                     // Show fire indicator with click progress
@@ -294,6 +307,8 @@ function renderGrid() {
                 if (gameState.selectedCard && gameState.selectedCard !== 'expand') {
                     if (!tile.isHeart && !building) {
                         tileElement.classList.add('valid-placement');
+                        // Show ghost preview of building effect
+                        addPlacementGhostPreview(tileElement, x, y);
                     } else {
                         tileElement.classList.add('invalid-placement');
                     }
@@ -328,6 +343,78 @@ function addWallIndicators(tileElement, x, y) {
             wall.className = `wall-indicator wall-${dir}`;
             tileElement.appendChild(wall);
         }
+    }
+}
+
+function addBuildingEffectGhosts(tileElement, building, x, y) {
+    // Show ghost icons on adjacent tiles for buildings that affect neighbors
+    const affectsNeighbors = ['reinforce', 'lightningRod', 'wellBucket'];
+
+    if (!affectsNeighbors.includes(building.type)) return;
+
+    const card = CARDS[building.type];
+
+    // Add ghost indicators to show effect range
+    const directions = [
+        { dir: 'north', dx: 0, dy: -1 },
+        { dir: 'south', dx: 0, dy: 1 },
+        { dir: 'east', dx: 1, dy: 0 },
+        { dir: 'west', dx: -1, dy: 0 }
+    ];
+
+    for (const { dir, dx, dy } of directions) {
+        const neighborX = x + dx;
+        const neighborY = y + dy;
+        const neighborKey = `${neighborX},${neighborY}`;
+
+        // Only show ghost if neighbor tile exists
+        if (gameState.tiles.has(neighborKey)) {
+            // We'll mark these with data attributes and style them via CSS
+            // The actual ghost will be rendered on the neighbor tiles in a moment
+            const ghost = document.createElement('div');
+            ghost.className = `effect-ghost effect-${dir}`;
+            ghost.innerHTML = card.icon;
+            ghost.dataset.buildingType = building.type;
+            tileElement.appendChild(ghost);
+        }
+    }
+}
+
+function addPlacementGhostPreview(tileElement, x, y) {
+    // When a card is selected, show ghost preview of what would be affected
+    if (!gameState.selectedCard) return;
+
+    const card = CARDS[gameState.selectedCard];
+    if (!card) return;
+
+    const affectsNeighbors = ['reinforce', 'lightningRod', 'wellBucket'];
+
+    if (!affectsNeighbors.includes(gameState.selectedCard)) return;
+
+    // Show preview of effect range when hovering valid placement
+    const directions = [
+        { dir: 'north', dx: 0, dy: -1 },
+        { dir: 'south', dx: 0, dy: 1 },
+        { dir: 'east', dx: 1, dy: 0 },
+        { dir: 'west', dx: -1, dy: 0 }
+    ];
+
+    // Check which adjacent tiles exist
+    let affectedTiles = 0;
+    for (const { dx, dy } of directions) {
+        const neighborKey = `${x + dx},${y + dy}`;
+        if (gameState.tiles.has(neighborKey)) {
+            affectedTiles++;
+        }
+    }
+
+    // Add a small indicator showing how many tiles will be protected
+    if (affectedTiles > 0) {
+        const preview = document.createElement('div');
+        preview.className = 'ghost-preview-indicator';
+        preview.innerHTML = `+${affectedTiles}`;
+        preview.title = `Will protect ${affectedTiles + 1} tiles (including this one)`;
+        tileElement.appendChild(preview);
     }
 }
 
@@ -369,6 +456,7 @@ function renderCards() {
         const cardElement = document.createElement('div');
         cardElement.className = 'card';
         cardElement.dataset.cardId = cardId;
+        cardElement.title = card.description;
 
         if (card.type === 'consumable') {
             cardElement.classList.add('consumable-card');
@@ -388,7 +476,11 @@ function renderCards() {
             <span class="card-cost">${card.cost} token${card.cost > 1 ? 's' : ''}</span>
         `;
 
+        // Add tooltip on hover/long press
+        cardElement.addEventListener('mouseenter', (e) => showTooltip(e.target, card.description));
+        cardElement.addEventListener('mouseleave', hideTooltip);
         cardElement.addEventListener('click', () => handleCardClick(cardId));
+
         elements.cardHand.appendChild(cardElement);
     }
 }
@@ -1014,61 +1106,112 @@ async function processFireSpread() {
 }
 
 async function processFlood(intensity) {
-    // Pick random edge
+    // Rogue Wave: Pick a random edge and direction to roll across the base
     const edges = ['north', 'south', 'east', 'west'];
     const edge = edges[Math.floor(Math.random() * edges.length)];
 
-    showToast(`🌊 Flood from the ${edge}!`);
+    showToast(`🌊 Rogue Wave from the ${edge}!`);
 
-    // Get tiles on that edge
+    // Get starting tile(s) on that edge
     const edgeTiles = getEdgeTiles(edge);
 
-    // Show warning first
-    for (const tile of edgeTiles) {
-        const tileElement = document.querySelector(`.tile[data-x="${tile.x}"][data-y="${tile.y}"]`);
-        if (tileElement) {
-            tileElement.classList.add('flood-warning');
-        }
+    if (edgeTiles.length === 0) return;
+
+    // For each intensity, create a wave path
+    for (let i = 0; i < intensity; i++) {
+        if (edgeTiles.length === 0) break;
+
+        // Pick a random starting tile
+        const randomIndex = Math.floor(Math.random() * edgeTiles.length);
+        const startTile = edgeTiles.splice(randomIndex, 1)[0];
+
+        // Roll the wave across the base
+        await rollRogueWave(startTile.x, startTile.y, edge);
+        await delay(300);
     }
-
-    await delay(1500); // Give player time to see what will be hit
-
-    // Clear warnings and apply flood
-    for (const tile of edgeTiles) {
-        const key = `${tile.x},${tile.y}`;
-        const tileElement = document.querySelector(`.tile[data-x="${tile.x}"][data-y="${tile.y}"]`);
-
-        if (tileElement) {
-            tileElement.classList.remove('flood-warning');
-        }
-
-        // Check for sandbag protection
-        const building = gameState.buildings.get(key);
-        const protected = building && building.type === 'sandbag' && building.direction === edge;
-
-        if (protected) {
-            showToast('Sandbag blocks the flood!');
-            continue;
-        }
-
-        // Animate flood
-        if (tileElement) {
-            tileElement.classList.add('flood-effect');
-            await delay(300);
-        }
-
-        // Destroy building (including the sandbag if not protecting)
-        if (gameState.buildings.has(key)) {
-            await destroyBuilding(tile.x, tile.y);
-        }
-    }
-
-    await delay(500);
 
     // Remove flood effect
     document.querySelectorAll('.flood-effect').forEach(el => {
         el.classList.remove('flood-effect');
     });
+}
+
+async function rollRogueWave(startX, startY, fromEdge) {
+    // Determine the direction the wave travels (opposite of the edge it comes from)
+    let dx = 0, dy = 0;
+    let oppositeDir = '';
+
+    switch (fromEdge) {
+        case 'north':
+            dy = 1;
+            oppositeDir = 'north';
+            break;
+        case 'south':
+            dy = -1;
+            oppositeDir = 'south';
+            break;
+        case 'east':
+            dx = -1;
+            oppositeDir = 'east';
+            break;
+        case 'west':
+            dx = 1;
+            oppositeDir = 'west';
+            break;
+    }
+
+    let currentX = startX;
+    let currentY = startY;
+
+    // Roll the wave across the base
+    while (true) {
+        const key = `${currentX},${currentY}`;
+        const tile = gameState.tiles.get(key);
+
+        // Stop if we've left the base
+        if (!tile) break;
+
+        const tileElement = document.querySelector(`.tile[data-x="${currentX}"][data-y="${currentY}"]`);
+
+        // Show wave animation
+        if (tileElement) {
+            tileElement.classList.add('flood-warning');
+        }
+
+        await delay(200);
+
+        if (tileElement) {
+            tileElement.classList.remove('flood-warning');
+        }
+
+        // Check for sandbag wall blocking this direction
+        const building = gameState.buildings.get(key);
+        if (building && building.type === 'sandbag' && building.direction === oppositeDir) {
+            showToast('🧱 Sandbag wall stops the wave!');
+            if (tileElement) {
+                tileElement.classList.add('flood-effect');
+                await delay(300);
+                tileElement.classList.remove('flood-effect');
+            }
+            break;
+        }
+
+        // Animate flood hitting this tile
+        if (tileElement) {
+            tileElement.classList.add('flood-effect');
+        }
+
+        // Destroy building if present
+        if (gameState.buildings.has(key) && !tile.isHeart) {
+            await destroyBuilding(currentX, currentY);
+        }
+
+        await delay(200);
+
+        // Move to next tile
+        currentX += dx;
+        currentY += dy;
+    }
 }
 
 function getEdgeTiles(edge) {
@@ -1338,6 +1481,60 @@ function showPhaseIndicator(text) {
     setTimeout(() => {
         indicator.remove();
     }, 1500);
+}
+
+// ============================================================================
+// TOOLTIP SYSTEM
+// ============================================================================
+
+let currentTooltip = null;
+let tooltipTimeout = null;
+
+function showTooltip(element, text) {
+    // Clear any existing tooltip
+    hideTooltip();
+
+    // Wait a moment before showing tooltip (to avoid showing on quick hover)
+    tooltipTimeout = setTimeout(() => {
+        currentTooltip = document.createElement('div');
+        currentTooltip.className = 'custom-tooltip';
+        currentTooltip.textContent = text;
+        document.body.appendChild(currentTooltip);
+
+        // Position tooltip near the element
+        const rect = element.getBoundingClientRect();
+        const tooltipRect = currentTooltip.getBoundingClientRect();
+
+        let left = rect.left + (rect.width / 2) - (tooltipRect.width / 2);
+        let top = rect.top - tooltipRect.height - 10;
+
+        // Keep tooltip on screen
+        if (left < 10) left = 10;
+        if (left + tooltipRect.width > window.innerWidth - 10) {
+            left = window.innerWidth - tooltipRect.width - 10;
+        }
+
+        if (top < 10) {
+            // Show below if not enough space above
+            top = rect.bottom + 10;
+        }
+
+        currentTooltip.style.left = `${left}px`;
+        currentTooltip.style.top = `${top}px`;
+        currentTooltip.classList.add('visible');
+    }, 300);
+}
+
+function hideTooltip() {
+    if (tooltipTimeout) {
+        clearTimeout(tooltipTimeout);
+        tooltipTimeout = null;
+    }
+
+    if (currentTooltip) {
+        currentTooltip.remove();
+        currentTooltip = null;
+    }
 }
 
 // ============================================================================

@@ -216,6 +216,35 @@ html, body {
 .tile .sandbag-dir.east { right: 5px; }
 .tile .sandbag-dir.west { left: 5px; }
 
+/* Ghost effect indicators */
+.effect-ghost {
+    position: absolute;
+    font-size: 0.8rem;
+    opacity: 0.4;
+    pointer-events: none;
+    z-index: 5;
+}
+
+.effect-ghost.effect-north { top: -2px; left: 50%; transform: translateX(-50%); }
+.effect-ghost.effect-south { bottom: -2px; left: 50%; transform: translateX(-50%); }
+.effect-ghost.effect-east { right: -2px; top: 50%; transform: translateY(-50%); }
+.effect-ghost.effect-west { left: -2px; top: 50%; transform: translateY(-50%); }
+
+/* Ghost preview indicator */
+.ghost-preview-indicator {
+    position: absolute;
+    bottom: 2px;
+    right: 2px;
+    background: rgba(40, 167, 69, 0.8);
+    color: white;
+    font-size: 0.6rem;
+    font-weight: bold;
+    padding: 2px 4px;
+    border-radius: 3px;
+    pointer-events: none;
+    z-index: 10;
+}
+
 /* Event Animations */
 @keyframes lightning-strike {
     0% { background: inherit; }
@@ -686,6 +715,28 @@ html, body {
     20% { opacity: 1; transform: translateX(-50%) translateY(0); }
     80% { opacity: 1; transform: translateX(-50%) translateY(0); }
     100% { opacity: 0; transform: translateX(-50%) translateY(-20px); }
+}
+
+/* Custom Tooltip */
+.custom-tooltip {
+    position: fixed;
+    background: rgba(0, 0, 0, 0.95);
+    color: white;
+    padding: 8px 12px;
+    border-radius: 6px;
+    font-size: 0.85rem;
+    max-width: 250px;
+    z-index: 1500;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.2s ease;
+    border: 1px solid var(--accent-primary);
+    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.3);
+    line-height: 1.4;
+}
+
+.custom-tooltip.visible {
+    opacity: 1;
 }
 
 /* Mobile Responsive */
