@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>Base Defense: Storm to Strange</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div id="game-container">
+        <!-- Header -->
+        <header id="game-header">
+            <div id="wave-counter">Wave: <span id="wave-number">1</span>/15</div>
+            <div id="token-display">Tokens: <span id="token-count">3</span></div>
+        </header>
+
+        <!-- Game Grid Area -->
+        <div id="grid-container">
+            <div id="game-grid"></div>
+        </div>
+
+        <!-- Wave Preview Banner -->
+        <div id="wave-preview" class="hidden">
+            <div id="preview-content">
+                <div id="threat-icons"></div>
+                <div id="threat-text"></div>
+            </div>
+        </div>
+
+        <!-- Card Selection Area -->
+        <div id="card-area">
+            <div id="card-hand"></div>
+            <button id="start-wave-btn" class="action-btn">Start Wave</button>
+        </div>
+
+        <!-- Direction Selector (for Sandbag placement) -->
+        <div id="direction-selector" class="hidden">
+            <div class="direction-title">Choose direction to block:</div>
+            <div class="direction-buttons">
+                <button class="dir-btn" data-dir="north">↑ North</button>
+                <button class="dir-btn" data-dir="east">→ East</button>
+                <button class="dir-btn" data-dir="south">↓ South</button>
+                <button class="dir-btn" data-dir="west">← West</button>
+            </div>
+            <button class="cancel-btn">Cancel</button>
+        </div>
+
+        <!-- Game Over Screen -->
+        <div id="game-over-screen" class="overlay hidden">
+            <div class="overlay-content">
+                <h1 id="game-over-title">Game Over</h1>
+                <div id="game-stats"></div>
+                <button id="restart-btn" class="action-btn">Play Again</button>
+            </div>
+        </div>
+
+        <!-- Tutorial Overlay -->
+        <div id="tutorial-overlay" class="overlay">
+            <div class="overlay-content tutorial">
+                <h1>Base Defense: Storm to Strange</h1>
+                <p>Defend your base against 15 waves of escalating storms!</p>
+                <div class="tutorial-section">
+                    <h3>How to Play:</h3>
+                    <ul>
+                        <li>Protect the <span class="heart-icon">♥</span> Heart tile at all costs</li>
+                        <li>Tap a card to select it, then tap a tile to place</li>
+                        <li>Use tokens wisely - you get 3 per wave (plus shrine bonuses)</li>
+                        <li>Build defenses against lightning, fire, floods, and wind</li>
+                    </ul>
+                </div>
+                <button id="start-game-btn" class="action-btn">Start Game</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="game.js"></script>
+</body>
+</html>
