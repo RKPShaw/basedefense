@@ -35,16 +35,16 @@ const CARDS = {
         name: 'Sandbag Wall',
         icon: '🧱',
         cost: 1,
-        type: 'permanent',
-        description: 'Blocks rogue waves from one direction (stops the wave from rolling through)'
+        type: 'upgrade',
+        description: 'Reinforce a perimeter wall in a chosen direction to increase its level'
     },
     reinforce: {
         id: 'reinforce',
         name: 'Reinforce',
         icon: '🛡️',
         cost: 1,
-        type: 'consumable',
-        description: 'Tile and adjacent tiles immune to wind this wave'
+        type: 'upgrade',
+        description: 'Board up an existing building to give it reinforced wind protection'
     },
     shrine: {
         id: 'shrine',
@@ -117,6 +117,7 @@ const gameState = {
     selectedCard: null,
     tiles: new Map(), // key: "x,y", value: tile object
     buildings: new Map(), // key: "x,y", value: building object
+    walls: new Map(), // key: "x,y:dir", value: { level }
     heartDestroyed: false, // Track if heart is destroyed
     stats: {
         buildingsPlaced: 0,
@@ -124,9 +125,8 @@ const gameState = {
         tokensEarned: 0,
         tokensSpent: 0
     },
-    pendingSandbagTile: null,
+    pendingSandbagTile: null, // Store tile and direction when reinforcing a wall
     firesOnBoard: new Map(), // Track burning tiles: key -> {x, y, clicksNeeded, maxClicks}
-    reinforcedTiles: new Set(), // Track reinforced tiles for this wave
     usedLightningRods: new Set(), // Track used rods this wave
     activeLightningStrikes: [] // Track incoming lightning strikes for player interaction
 };
@@ -146,6 +146,7 @@ const elements = {
     wavePreview: document.getElementById('wave-preview'),
     threatIcons: document.getElementById('threat-icons'),
     threatText: document.getElementById('threat-text'),
+    waveDirectionIndicator: document.getElementById('wave-direction-indicator'),
     startWaveBtn: document.getElementById('start-wave-btn'),
     directionSelector: document.getElementById('direction-selector'),
     gameOverScreen: document.getElementById('game-over-screen'),
@@ -168,9 +169,9 @@ function initGame() {
     gameState.selectedCard = null;
     gameState.tiles.clear();
     gameState.buildings.clear();
+    gameState.walls.clear();
     gameState.heartDestroyed = false;
     gameState.firesOnBoard.clear();
-    gameState.reinforcedTiles.clear();
     gameState.usedLightningRods.clear();
     gameState.pendingSandbagTile = null;
     gameState.stats = {
@@ -179,6 +180,7 @@ function initGame() {
         tokensEarned: 3,
         tokensSpent: 0
     };
+    clearWaveDirectionIndicator();
 
     // Create initial 5-tile plus shape
     createTile(0, 0, true);  // Center - Heart
@@ -188,6 +190,7 @@ function initGame() {
     createTile(-1, 0, false); // West
 
     // Initial render
+    rebuildWalls();
     updateGridBounds();
     renderGrid();
     renderCards();
@@ -208,6 +211,31 @@ function createTile(x, y, isHeart = false) {
 // ============================================================================
 // GRID RENDERING
 // ============================================================================
+
+function rebuildWalls() {
+    const newWalls = new Map();
+
+    for (const [key, tile] of gameState.tiles) {
+        const directions = [
+            { dir: 'north', dx: 0, dy: -1 },
+            { dir: 'south', dx: 0, dy: 1 },
+            { dir: 'east', dx: 1, dy: 0 },
+            { dir: 'west', dx: -1, dy: 0 }
+        ];
+
+        for (const { dir, dx, dy } of directions) {
+            const neighborKey = `${tile.x + dx},${tile.y + dy}`;
+            if (!gameState.tiles.has(neighborKey)) {
+                const wallKey = `${tile.x},${tile.y}:${dir}`;
+                const existing = gameState.walls.get(wallKey);
+                const level = existing ? existing.level : 1;
+                newWalls.set(wallKey, { level });
+            }
+        }
+    }
+
+    gameState.walls = newWalls;
+}
 
 function updateGridBounds() {
     gridBounds = { minX: 0, maxX: 0, minY: 0, maxY: 0 };
@@ -262,19 +290,16 @@ function renderGrid() {
                         const card = CARDS[building.type];
                         tileElement.innerHTML = `<span class="building-icon">${card.icon}</span><span class="building-label">${card.name}</span>`;
 
+                        if (building.reinforced) {
+                            tileElement.classList.add('wood-boarded');
+                            const band = document.createElement('div');
+                            band.className = 'wood-frame';
+                            tileElement.appendChild(band);
+                        }
+
                         if (card.type === 'consumable') {
                             tileElement.classList.add('consumable');
                         }
-
-                        // Show sandbag direction
-                        if (building.type === 'sandbag' && building.direction) {
-                            const dirIndicator = document.createElement('div');
-                            dirIndicator.className = `sandbag-dir ${building.direction}`;
-                            tileElement.appendChild(dirIndicator);
-                        }
-
-                        // Add ghost icons showing building effects
-                        addBuildingEffectGhosts(tileElement, building, x, y);
 
                         // Add tooltip to building
                         tileElement.addEventListener('mouseenter', (e) => {
@@ -305,7 +330,14 @@ function renderGrid() {
 
                 // Highlight valid placement
                 if (gameState.selectedCard && gameState.selectedCard !== 'expand') {
-                    if (!tile.isHeart && !building) {
+                    const cardId = gameState.selectedCard;
+                    const isReinforceUpgrade = cardId === 'reinforce';
+                    const isSandbagUpgrade = cardId === 'sandbag';
+                    const validSandbagSpot = isSandbagUpgrade && isExposedTile(x, y);
+                    const canUpgradeBuilding = isReinforceUpgrade && building && !tile.isHeart;
+                    const canPlaceNewBuilding = !isReinforceUpgrade && !isSandbagUpgrade && !building;
+
+                    if (!tile.isHeart && (canUpgradeBuilding || validSandbagSpot || canPlaceNewBuilding)) {
                         tileElement.classList.add('valid-placement');
                         // Show ghost preview of building effect
                         addPlacementGhostPreview(tileElement, x, y);
@@ -341,41 +373,23 @@ function addWallIndicators(tileElement, x, y) {
         if (!gameState.tiles.has(neighborKey)) {
             const wall = document.createElement('div');
             wall.className = `wall-indicator wall-${dir}`;
+
+            const wallKey = `${x},${y}:${dir}`;
+            const wallInfo = gameState.walls.get(wallKey);
+            const level = wallInfo ? wallInfo.level : 0;
+
+            if (level > 0) {
+                wall.classList.add('reinforced-wall');
+                wall.dataset.level = level;
+                const label = document.createElement('span');
+                label.className = 'wall-level-label';
+                label.textContent = `Lv${level}`;
+                wall.appendChild(label);
+            } else {
+                wall.classList.add('broken-wall');
+            }
+
             tileElement.appendChild(wall);
-        }
-    }
-}
-
-function addBuildingEffectGhosts(tileElement, building, x, y) {
-    // Show ghost icons on adjacent tiles for buildings that affect neighbors
-    const affectsNeighbors = ['reinforce', 'lightningRod', 'wellBucket'];
-
-    if (!affectsNeighbors.includes(building.type)) return;
-
-    const card = CARDS[building.type];
-
-    // Add ghost indicators to show effect range
-    const directions = [
-        { dir: 'north', dx: 0, dy: -1 },
-        { dir: 'south', dx: 0, dy: 1 },
-        { dir: 'east', dx: 1, dy: 0 },
-        { dir: 'west', dx: -1, dy: 0 }
-    ];
-
-    for (const { dir, dx, dy } of directions) {
-        const neighborX = x + dx;
-        const neighborY = y + dy;
-        const neighborKey = `${neighborX},${neighborY}`;
-
-        // Only show ghost if neighbor tile exists
-        if (gameState.tiles.has(neighborKey)) {
-            // We'll mark these with data attributes and style them via CSS
-            // The actual ghost will be rendered on the neighbor tiles in a moment
-            const ghost = document.createElement('div');
-            ghost.className = `effect-ghost effect-${dir}`;
-            ghost.innerHTML = card.icon;
-            ghost.dataset.buildingType = building.type;
-            tileElement.appendChild(ghost);
         }
     }
 }
@@ -518,9 +532,13 @@ function handleTileClick(x, y) {
 
     // Build phase logic
     if (gameState.phase !== 'build') return;
-    if (!gameState.selectedCard) return;
-
     const tile = gameState.tiles.get(key);
+
+    if (!gameState.selectedCard) {
+        highlightProtectedTiles(x, y);
+        return;
+    }
+
     const card = CARDS[gameState.selectedCard];
 
     if (gameState.selectedCard === 'expand') {
@@ -531,20 +549,31 @@ function handleTileClick(x, y) {
         if (isValidExpansion) {
             placeExpansion(x, y);
         }
+    } else if (gameState.selectedCard === 'sandbag') {
+        if (!tile || tile.isHeart || !isExposedTile(x, y)) {
+            showToast('Pick a perimeter tile to reinforce its wall.');
+            return;
+        }
+        gameState.pendingSandbagTile = { x, y };
+        showDirectionSelector();
+    } else if (gameState.selectedCard === 'reinforce') {
+        const building = gameState.buildings.get(key);
+        if (!tile || tile.isHeart || !building) {
+            showToast('Reinforce must be applied to an existing building.');
+            return;
+        }
+        if (building.reinforced) {
+            showToast('This building is already boarded up.');
+            return;
+        }
+        applyReinforceUpgrade(x, y);
     } else {
         // Handle building placement
         if (!tile || tile.isHeart || gameState.buildings.has(key)) {
             showToast('Cannot place building here!');
             return;
         }
-
-        if (gameState.selectedCard === 'sandbag') {
-            // Show direction selector
-            gameState.pendingSandbagTile = { x, y };
-            showDirectionSelector();
-        } else {
-            placeBuilding(x, y, gameState.selectedCard);
-        }
+        placeBuilding(x, y, gameState.selectedCard);
     }
 }
 
@@ -618,6 +647,7 @@ function placeExpansion(x, y) {
     showToast('Base expanded!');
     gameState.selectedCard = null;
 
+    rebuildWalls();
     updateGridBounds();
     renderGrid();
     renderCards();
@@ -627,6 +657,11 @@ function placeExpansion(x, y) {
 function placeBuilding(x, y, buildingType, direction = null) {
     const key = `${x},${y}`;
     const card = CARDS[buildingType];
+
+    if (gameState.tokens < card.cost) {
+        showToast('Not enough tokens!');
+        return;
+    }
 
     gameState.tokens -= card.cost;
     gameState.stats.tokensSpent += card.cost;
@@ -652,12 +687,71 @@ function placeBuilding(x, y, buildingType, direction = null) {
     updateUI();
 }
 
+function applySandbagUpgrade(x, y, direction) {
+    const card = CARDS.sandbag;
+    const wallKey = `${x},${y}:${direction}`;
+    const wall = gameState.walls.get(wallKey);
+
+    if (!wall) {
+        showToast('No exterior wall on that side.');
+        return;
+    }
+
+    if (gameState.tokens < card.cost) {
+        showToast('Not enough tokens!');
+        return;
+    }
+
+    gameState.tokens -= card.cost;
+    gameState.stats.tokensSpent += card.cost;
+    wall.level += 1;
+
+    showToast(`Wall ${direction} reinforced to level ${wall.level}!`);
+    gameState.selectedCard = null;
+
+    renderGrid();
+    renderCards();
+    updateUI();
+}
+
+function applyReinforceUpgrade(x, y) {
+    const card = CARDS.reinforce;
+    const key = `${x},${y}`;
+    const building = gameState.buildings.get(key);
+
+    if (!building) {
+        showToast('No building here to reinforce.');
+        return;
+    }
+
+    if (gameState.tokens < card.cost) {
+        showToast('Not enough tokens!');
+        return;
+    }
+
+    gameState.tokens -= card.cost;
+    gameState.stats.tokensSpent += card.cost;
+    building.reinforced = true;
+
+    showToast('Building boarded up and reinforced!');
+    gameState.selectedCard = null;
+
+    renderGrid();
+    renderCards();
+    updateUI();
+}
+
 // ============================================================================
 // DIRECTION SELECTOR (for Sandbags)
 // ============================================================================
 
 function showDirectionSelector() {
     elements.directionSelector.classList.remove('hidden');
+
+    const title = elements.directionSelector.querySelector('.direction-title');
+    if (title) {
+        title.textContent = 'Choose wall direction to reinforce:';
+    }
 
     // Add event listeners for direction buttons
     const dirButtons = elements.directionSelector.querySelectorAll('.dir-btn');
@@ -666,10 +760,9 @@ function showDirectionSelector() {
             const direction = btn.dataset.dir;
             hideDirectionSelector();
             if (gameState.pendingSandbagTile) {
-                placeBuilding(
+                applySandbagUpgrade(
                     gameState.pendingSandbagTile.x,
                     gameState.pendingSandbagTile.y,
-                    'sandbag',
                     direction
                 );
                 gameState.pendingSandbagTile = null;
@@ -717,6 +810,26 @@ function hideWavePreview() {
     elements.wavePreview.classList.add('hidden');
 }
 
+function showWaveDirectionIndicator(edge) {
+    if (!elements.waveDirectionIndicator) return;
+
+    const arrows = {
+        north: '⬇️',
+        south: '⬆️',
+        east: '⬅️',
+        west: '➡️'
+    };
+
+    elements.waveDirectionIndicator.classList.remove('hidden');
+    elements.waveDirectionIndicator.textContent = `${arrows[edge] || ''} Incoming wave from the ${edge}`;
+}
+
+function clearWaveDirectionIndicator() {
+    if (!elements.waveDirectionIndicator) return;
+    elements.waveDirectionIndicator.classList.add('hidden');
+    elements.waveDirectionIndicator.textContent = '';
+}
+
 async function startWave() {
     if (gameState.phase !== 'build') return;
 
@@ -748,7 +861,6 @@ async function startWave() {
 
     // Clear consumables and reset state
     clearConsumables();
-    gameState.reinforcedTiles.clear();
     gameState.usedLightningRods.clear();
 
     // Check for victory
@@ -853,13 +965,13 @@ async function processLightning(intensity) {
 }
 
 function findNearbyLightningRod(x, y) {
-    const positions = [
-        { x, y },
-        { x: x - 1, y },
-        { x: x + 1, y },
-        { x, y: y - 1 },
-        { x, y: y + 1 }
-    ];
+    const positions = [];
+
+    for (let dx = -1; dx <= 1; dx++) {
+        for (let dy = -1; dy <= 1; dy++) {
+            positions.push({ x: x + dx, y: y + dy });
+        }
+    }
 
     for (const pos of positions) {
         const key = `${pos.x},${pos.y}`;
@@ -881,12 +993,14 @@ function findNearbyLightningRod(x, y) {
 }
 
 function checkAdjacentLightningRods(x, y) {
-    const positions = [
-        { x: x - 1, y },
-        { x: x + 1, y },
-        { x, y: y - 1 },
-        { x, y: y + 1 }
-    ];
+    const positions = [];
+
+    for (let dx = -1; dx <= 1; dx++) {
+        for (let dy = -1; dy <= 1; dy++) {
+            if (dx === 0 && dy === 0) continue;
+            positions.push({ x: x + dx, y: y + dy });
+        }
+    }
 
     for (const pos of positions) {
         const key = `${pos.x},${pos.y}`;
@@ -1111,6 +1225,7 @@ async function processFlood(intensity) {
     const edge = edges[Math.floor(Math.random() * edges.length)];
 
     showToast(`🌊 Rogue Wave from the ${edge}!`);
+    showWaveDirectionIndicator(edge);
 
     // Get starting tile(s) on that edge
     const edgeTiles = getEdgeTiles(edge);
@@ -1134,6 +1249,9 @@ async function processFlood(intensity) {
     document.querySelectorAll('.flood-effect').forEach(el => {
         el.classList.remove('flood-effect');
     });
+
+    clearWaveDirectionIndicator();
+    renderGrid();
 }
 
 async function rollRogueWave(startX, startY, fromEdge) {
@@ -1184,10 +1302,9 @@ async function rollRogueWave(startX, startY, fromEdge) {
             tileElement.classList.remove('flood-warning');
         }
 
-        // Check for sandbag wall blocking this direction
-        const building = gameState.buildings.get(key);
-        if (building && building.type === 'sandbag' && building.direction === oppositeDir) {
-            showToast('🧱 Sandbag wall stops the wave!');
+        // Check for wall blocking this direction
+        if (absorbWallHit(currentX, currentY, oppositeDir)) {
+            showToast('🧱 Perimeter wall stops the wave!');
             if (tileElement) {
                 tileElement.classList.add('flood-effect');
                 await delay(300);
@@ -1238,6 +1355,35 @@ function getNeighborKey(x, y, direction) {
     }
 }
 
+function getEntryDirection(dx, dy) {
+    if (dx === 1) return 'west';
+    if (dx === -1) return 'east';
+    if (dy === 1) return 'north';
+    if (dy === -1) return 'south';
+    return '';
+}
+
+function getExposedDirections(x, y) {
+    const directions = [];
+
+    if (!gameState.tiles.has(`${x},${y - 1}`)) directions.push('north');
+    if (!gameState.tiles.has(`${x},${y + 1}`)) directions.push('south');
+    if (!gameState.tiles.has(`${x - 1},${y}`)) directions.push('west');
+    if (!gameState.tiles.has(`${x + 1},${y}`)) directions.push('east');
+
+    return directions;
+}
+
+function absorbWallHit(x, y, direction, strength = 1) {
+    const wallKey = `${x},${y}:${direction}`;
+    const wall = gameState.walls.get(wallKey);
+
+    if (!wall || wall.level <= 0) return false;
+
+    wall.level = Math.max(0, wall.level - strength);
+    return true;
+}
+
 async function processWind(intensity) {
     // Get perimeter tiles (tiles with at least one exposed edge)
     const perimeterTiles = getPerimeterTiles();
@@ -1266,10 +1412,22 @@ async function processWind(intensity) {
             tileElement.classList.remove('wind-warning');
         }
 
-        // Check for reinforcement
-        if (gameState.reinforcedTiles.has(key)) {
-            continue;
+        // Walls absorb wind first
+        const exposedDirections = getExposedDirections(tile.x, tile.y);
+        let wallAbsorbed = false;
+        for (const dir of exposedDirections) {
+            if (absorbWallHit(tile.x, tile.y, dir, intensity)) {
+                wallAbsorbed = true;
+                if (tileElement) {
+                    tileElement.classList.add('wall-block');
+                    await delay(200);
+                    tileElement.classList.remove('wall-block');
+                }
+                break;
+            }
         }
+
+        if (wallAbsorbed) continue;
 
         // Check for reinforce building effect
         const isReinforced = checkReinforceProtection(tile.x, tile.y);
@@ -1290,6 +1448,8 @@ async function processWind(intensity) {
             await destroyBuilding(tile.x, tile.y);
         }
     }
+
+    renderGrid();
 }
 
 function getPerimeterTiles() {
@@ -1314,8 +1474,19 @@ function getPerimeterTiles() {
     return tiles;
 }
 
+function isExposedTile(x, y) {
+    const directions = [
+        `${x},${y - 1}`,
+        `${x},${y + 1}`,
+        `${x - 1},${y}`,
+        `${x + 1},${y}`
+    ];
+
+    return directions.some(nKey => !gameState.tiles.has(nKey));
+}
+
 function checkReinforceProtection(x, y) {
-    // Check this tile and adjacent for reinforce buildings
+    // Check this tile and adjacent for reinforced buildings
     const positions = [
         { x, y },
         { x: x - 1, y },
@@ -1327,7 +1498,7 @@ function checkReinforceProtection(x, y) {
     for (const pos of positions) {
         const key = `${pos.x},${pos.y}`;
         const building = gameState.buildings.get(key);
-        if (building && building.type === 'reinforce') {
+        if (building && building.reinforced) {
             return true;
         }
     }
@@ -1481,6 +1652,73 @@ function showPhaseIndicator(text) {
     setTimeout(() => {
         indicator.remove();
     }, 1500);
+}
+
+let protectionHighlightTimeout = null;
+
+function highlightProtectedTiles(x, y) {
+    if (protectionHighlightTimeout) {
+        clearTimeout(protectionHighlightTimeout);
+        protectionHighlightTimeout = null;
+    }
+
+    document.querySelectorAll('.protected-highlight').forEach(el => el.classList.remove('protected-highlight'));
+
+    const key = `${x},${y}`;
+    const building = gameState.buildings.get(key);
+    const tilesToMark = [];
+
+    if (building) {
+        // Reinforced buildings protect themselves + orthogonal neighbors
+        if (building.reinforced) {
+            tilesToMark.push({ x, y });
+            tilesToMark.push({ x: x - 1, y });
+            tilesToMark.push({ x: x + 1, y });
+            tilesToMark.push({ x, y: y - 1 });
+            tilesToMark.push({ x, y: y + 1 });
+        }
+
+        // Well buckets assist adjacent fires (orthogonal)
+        if (building.type === 'wellBucket') {
+            tilesToMark.push({ x, y });
+            tilesToMark.push({ x: x - 1, y });
+            tilesToMark.push({ x: x + 1, y });
+            tilesToMark.push({ x, y: y - 1 });
+            tilesToMark.push({ x, y: y + 1 });
+        }
+
+        // Lightning rods protect all 8 surrounding tiles
+        if (building.type === 'lightningRod') {
+            for (let dx = -1; dx <= 1; dx++) {
+                for (let dy = -1; dy <= 1; dy++) {
+                    tilesToMark.push({ x: x + dx, y: y + dy });
+                }
+            }
+        }
+    }
+
+    // Walls protect the tile they face
+    const wallDirections = getExposedDirections(x, y);
+    if (wallDirections.length > 0) {
+        tilesToMark.push({ x, y });
+    }
+
+    const uniqueKeys = new Set();
+    for (const pos of tilesToMark) {
+        const markKey = `${pos.x},${pos.y}`;
+        if (!gameState.tiles.has(markKey) || uniqueKeys.has(markKey)) continue;
+        uniqueKeys.add(markKey);
+        const tileElement = document.querySelector(`.tile[data-x="${pos.x}"][data-y="${pos.y}"]`);
+        if (tileElement) {
+            tileElement.classList.add('protected-highlight');
+        }
+    }
+
+    if (uniqueKeys.size === 0) return;
+
+    protectionHighlightTimeout = setTimeout(() => {
+        document.querySelectorAll('.protected-highlight').forEach(el => el.classList.remove('protected-highlight'));
+    }, 1200);
 }
 
 // ============================================================================
